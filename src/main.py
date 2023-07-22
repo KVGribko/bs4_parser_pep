@@ -1,5 +1,6 @@
 import logging
 import re
+from collections import defaultdict
 from urllib.parse import urljoin
 
 import requests_cache
@@ -7,21 +8,20 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 from configs import configure_argument_parser, configure_logging
-from constants import BASE_DIR, MAIN_DOC_URL, PEPS_LIST_URL
-from outputs import control_output
-from utils import (
-    find_tag,
-    get_all_peps,
-    get_response,
-    get_status_count,
-    set_pep_link_status,
+from constants import (
+    BASE_DIR,
+    DOWNLOADS_URL,
+    EXPECTED_STATUS,
+    MAIN_DOC_URL,
+    PEPS_LIST_URL,
+    WHATS_NEW_URL,
 )
+from outputs import control_output
+from utils import find_tag, get_response
 
 
 def whats_new(session):
-    whats_new_url = urljoin(MAIN_DOC_URL, "whatsnew/")
-
-    response = get_response(session, whats_new_url)
+    response = get_response(session, WHATS_NEW_URL)
     if response is None:
         return
 
@@ -37,7 +37,7 @@ def whats_new(session):
     results = [("Ссылка на статью", "Заголовок", "Редактор, Автор")]
     for section in tqdm(sections_by_python):
         version_a_tag = section.find("a")
-        version_link = urljoin(whats_new_url, version_a_tag["href"])
+        version_link = urljoin(WHATS_NEW_URL, version_a_tag["href"])
         response = get_response(session, version_link)
         if response is None:
             continue
@@ -77,9 +77,7 @@ def latest_versions(session):
 
 
 def download(session):
-    downloads_url = urljoin(MAIN_DOC_URL, "download.html")
-
-    response = get_response(session, downloads_url)
+    response = get_response(session, DOWNLOADS_URL)
     if response is None:
         return
 
@@ -93,9 +91,9 @@ def download(session):
     )
     pdf_a4_link = pdf_a4_tag["href"]
 
-    archive_url = urljoin(downloads_url, pdf_a4_link)
+    archive_url = urljoin(DOWNLOADS_URL, pdf_a4_link)
     filename = archive_url.split("/")[-1]
-    downloads_dir = BASE_DIR / "downloads"
+    downloads_dir = BASE_DIR / "downloads"  # без этого не проходит тест
     downloads_dir.mkdir(exist_ok=True)
     archive_path = downloads_dir / filename
 
@@ -111,9 +109,45 @@ def pep(session: requests_cache.CachedSession):
     if response is None:
         return
     soup = BeautifulSoup(response.text, features="lxml")
-    peps = get_all_peps(soup)
-    set_pep_link_status(session, peps)
-    return get_status_count(peps)
+
+    pep_tables = soup.find_all(
+        "table",
+        attrs={"class": "pep-zero-table docutils align-default"},
+    )
+    status_count = defaultdict(int)
+    for table in tqdm(pep_tables):
+        table_body = find_tag(table, "tbody")
+        table_rows = table_body.find_all("tr")
+        for row in table_rows:
+            status = None
+            if row.abbr and len(row.abbr.text.strip()) == 2:
+                status = row.abbr.text.strip()[1]
+            link = urljoin(PEPS_LIST_URL, row.a["href"])
+            response = get_response(session, link)
+            soup = BeautifulSoup(response.text, "lxml")
+            dl = find_tag(soup, "dl")
+            status_element = dl.find(string="Status").parent
+            status_in_link = status_element.find_next_sibling("dd").text
+
+            if status:
+                table_status = EXPECTED_STATUS[status]
+                if status_in_link not in table_status:
+                    msg = (
+                        f"Несовпадающие статусы:\n"
+                        f"{link}\n"
+                        f"Статус в карточке: {status_in_link}\n"
+                        f"Ожидаемые статусы: {table_status}\n"
+                    )
+                    logging.error(msg, stack_info=True)
+            status_count[status_in_link] += 1
+
+    pep_count = sum(status_count.values())
+    status_count = [("Статус", "Количество")] + sorted(
+        status_count.items(), key=lambda x: x[1]
+    )
+    status_count.append(("Total", pep_count))
+
+    return status_count
 
 
 MODE_TO_FUNCTION = {
