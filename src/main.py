@@ -93,7 +93,7 @@ def download(session):
 
     archive_url = urljoin(DOWNLOADS_URL, pdf_a4_link)
     filename = archive_url.split("/")[-1]
-    downloads_dir = BASE_DIR / "downloads"  # без этого не проходит тест
+    downloads_dir = BASE_DIR / "downloads"
     downloads_dir.mkdir(exist_ok=True)
     archive_path = downloads_dir / filename
 
@@ -128,18 +128,19 @@ def pep(session: requests_cache.CachedSession):
             dl = find_tag(soup, "dl")
             status_element = dl.find(string="Status").parent
             status_in_link = status_element.find_next_sibling("dd").text
-
-            if status:
-                table_status = EXPECTED_STATUS[status]
-                if status_in_link not in table_status:
-                    msg = (
-                        f"Несовпадающие статусы:\n"
-                        f"{link}\n"
-                        f"Статус в карточке: {status_in_link}\n"
-                        f"Ожидаемые статусы: {table_status}\n"
-                    )
-                    logging.error(msg, stack_info=True)
             status_count[status_in_link] += 1
+            if status is None:
+                continue
+
+            table_status = EXPECTED_STATUS[status]
+            if status_in_link not in table_status:
+                msg = (
+                    "Несовпадающие статусы:\n"
+                    f"{link}\n"
+                    f"Статус в карточке: {status_in_link}\n"
+                    f"Ожидаемые статусы: {table_status}\n"
+                )
+                logging.error(msg, stack_info=True)
 
     pep_count = sum(status_count.values())
     status_count = [("Статус", "Количество")] + sorted(
